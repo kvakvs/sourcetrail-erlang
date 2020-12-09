@@ -1,3 +1,7 @@
+# Sourcetrail project files and link to compiled script
+/sourcetrail-disasm
+*.srctrl*
+
 .rebar3
 _*
 .eunit
