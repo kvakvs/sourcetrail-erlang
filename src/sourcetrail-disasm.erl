@@ -10,10 +10,26 @@ main([]) ->
 main([Path]) ->
   {ok, Beam} = file:read_file(Path),
   FormTree = try_get_abstract_code(Path, Beam),
-  J = scan_form(FormTree),
-  Json = jsx:encode(#{forms => J}),
+  {Source, ModuleName} = try_get_compile_info(Beam),
+  Forms = scan_form(FormTree),
+%%  lists:map(
+%%    fun(F = #{code := C}) ->
+%%      io:format("Code ~p~n", [C]),
+%%      jsx:encode(F)
+%%    end,
+%%    lists:filter(fun(#{type := T}) -> T =:= <<"function">> end, Forms)),
+%%  io:format("FORMS ~p~n", [Forms]),
+  Json = jsone:encode(#{
+    forms => Forms,
+    source => erlang:list_to_binary(Source),
+    module_name => ModuleName
+  }),
   io:format("~s~n", [Json]).
 
+try_get_compile_info(Beam) ->
+  {ok, {ModName, [{compile_info, CInfo}]}} = beam_lib:chunks(Beam, [compile_info]),
+  Source = proplists:get_value(source, CInfo),
+  {Source, ModName}.
 
 try_get_abstract_code(Path, Beam) ->
   case beam_lib:chunks(Beam, [abstract_code]) of
@@ -34,7 +50,7 @@ try_get_abstract_code(Path, Beam) ->
 %% @doc First level scan (attributes and functions)
 scan_form({tree, form_list, _Attr, L}) -> scan_form_list(L);
 
-scan_form({attribute, Line, Name, Value}) ->
+scan_form({attribute, Line, Name, _Value}) ->
   #{
     type => <<"attr">>,
     name => Name,
@@ -94,6 +110,49 @@ scan_expr({'fun', Line, {clauses, Clauses}}) ->
     clauses => scan_expr_list(Clauses)
   };
 
+scan_expr({'named_fun', Line, Name, Clauses}) ->
+  #{
+    type => <<"named-fun">>,
+    line => Line,
+    name => Name,
+    clauses => scan_expr_list(Clauses)
+  };
+
+scan_expr({'fun', Line, Dst}) ->
+  #{
+    type => <<"fun">>,
+    line => Line,
+    dst => scan_expr(Dst)
+  };
+
+scan_expr({'receive', Line, Clauses}) ->
+  #{type => <<"receive">>, line => Line, clauses => scan_expr_list(Clauses)};
+
+scan_expr({'receive', Line, Clauses, _X, _Y}) ->
+  #{type => <<"receive">>, line => Line, clauses => scan_expr_list(Clauses)};
+
+scan_expr({'if', Line, Clauses}) ->
+  #{type => <<"if">>, line => Line, clauses => scan_expr_list(Clauses)};
+
+scan_expr({'block', Line, Code}) ->
+  #{type => <<"block">>, line => Line, code => scan_expr_list(Code)};
+
+scan_expr({'lc', Line, Tuple, Generators}) ->
+  #{
+    type => <<"lc">>,
+    line => Line,
+    tuple => scan_expr(Tuple),
+    generators => scan_expr_list(Generators)
+  };
+
+scan_expr({'generate', Line, Record, Var}) ->
+  #{
+    type => <<"lc-generate">>,
+    line => Line,
+    record => scan_expr(Record),
+    var => scan_expr(Var)
+  };
+
 scan_expr({'atom', Line, A}) ->
   #{
     type => <<"atom">>,
@@ -106,6 +165,37 @@ scan_expr({'tuple', Line, Elements}) ->
     type => <<"tuple">>,
     line => Line,
     elements => scan_expr_list(Elements)
+  };
+
+scan_expr({'map', Line, Var, Elements}) ->
+  #{
+    type => <<"map">>,
+    line => Line,
+    var => scan_expr(Var),
+    elements => scan_expr_list(Elements)
+  };
+
+scan_expr({'map', Line, Elements}) ->
+  #{
+    type => <<"map">>,
+    line => Line,
+    elements => scan_expr_list(Elements)
+  };
+
+scan_expr({'map_field_assoc', Line, K, V}) ->
+  #{
+    type => <<"map_field">>,
+    line => Line,
+    k => scan_expr(K),
+    v => scan_expr(V)
+  };
+
+scan_expr({'map_field_exact', Line, K, V}) ->
+  #{
+    type => <<"map_field_exact">>,
+    line => Line,
+    k => scan_expr(K),
+    v => scan_expr(V)
   };
 
 scan_expr({'cons', Line, H, T}) ->
@@ -130,6 +220,14 @@ scan_expr({'match', Line, Var, Value}) ->
     line => Line,
     var => scan_expr(Var),
     value => scan_expr(Value)
+  };
+
+scan_expr({'record_index', Line, Name, FieldName}) ->
+  #{
+    type => <<"record-index">>,
+    line => Line,
+    rec_name => Name,
+    field_name => scan_expr(FieldName)
   };
 
 scan_expr({'record', Line, Name, Fields}) ->
@@ -189,6 +287,21 @@ scan_expr({'op', Line, Op, A, B}) ->
     b => scan_expr(B)
   };
 
+scan_expr({'op', Line, Op, A}) ->
+  #{
+    type => <<"unary-op">>,
+    line => Line,
+    op => erlang:atom_to_binary(Op, utf8),
+    a => scan_expr(A)
+  };
+
+scan_expr({'catch', Line, Expr}) ->
+  #{
+    type => <<"catch">>,
+    line => Line,
+    expr => scan_expr(Expr)
+  };
+
 scan_expr({'try', Line, Expr, A, B, C}) ->
   #{
     type => <<"try">>,
@@ -202,17 +315,18 @@ scan_expr({'try', Line, Expr, A, B, C}) ->
 scan_expr({nil, _Line}) -> #{type => <<"nil">>};
 scan_expr({integer, _Line, N}) -> #{type => <<"int">>, value => N};
 scan_expr({char, _Line, N}) -> #{type => <<"char">>, value => N};
+scan_expr({function, Name, Arity}) -> #{type => <<"fun">>, name => Name, arity => Arity};
+scan_expr({function, Module, Name, Arity}) ->
+  #{type => <<"fullq-fun">>,
+    module => scan_expr(Module),
+    name => scan_expr(Name),
+    arity => scan_expr(Arity)};
 scan_expr({string, _Line, S}) ->
   #{
     type => <<"str">>,
     value => unicode:characters_to_binary(S)
   };
 
-%%scan_expr(Atom) when is_atom(Atom) ->
-%%  #{
-%%    type => <<"atom">>,
-%%    value => erlang:atom_to_binary(Atom, utf8)
-%%  };
 
 scan_expr(Element) ->
   erlang:error({error, "EXPR not handled", Element}).
@@ -220,6 +334,18 @@ scan_expr(Element) ->
 
 scan_expr_list(ExprList) ->
   lists:map(fun(C) -> scan_expr(C) end, ExprList).
+%%  R = lists:map(fun(C) -> scan_expr(C) end, ExprList),
+%%  lists:foreach(
+%%    fun(E) ->
+%%      io:format("Try enc: ~p~n", [R]),
+%%      jsx:encode(R, [{error_handler, fun my_error_handler/3}])
+%%    end,
+%%    R),
+%%  R.
 
 scan_form_list(FList) ->
   lists:map(fun(C) -> scan_form(C) end, FList).
+
+
+%%my_error_handler(_Arg0, _Arg1, _Arg2) ->
+%%  io:format("My error: ~99999p~n~99999p~n", [_Arg0, _Arg2]).
