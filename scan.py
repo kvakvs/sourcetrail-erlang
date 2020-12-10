@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 
-from srctrl_erlang.disasm_reader import Scanner
+from sourcetrail_erlang.disasm_reader import Scanner
 
 
 def setup_logging():

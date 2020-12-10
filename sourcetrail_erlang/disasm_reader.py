@@ -1,10 +1,11 @@
 import json
 import logging
-import subprocess
 import sys
-from typing import Dict, Union, List
+from typing import List
 
-from srctrl_erlang import sourcetraildb as srctrl
+from beam_file.beam_file import BEAMFile
+from beam_file.form import Form
+from sourcetrail_erlang import sourcetraildb as srctrl
 
 LOGGER = logging.getLogger("disasm-reader")
 
@@ -19,7 +20,7 @@ class Scanner:
 
         self.beam_file = beam_file
 
-        disasm = load_ast(beam_file, parse_script_path)  # type: Dict[str, Union[str, Dict]]
+        disasm = load_ast(beam_file)  # type: List[Form]
         self.ast = disasm["forms"]
         self.module_name = disasm["module_name"]
         self.source_path = disasm["source"]
@@ -109,16 +110,6 @@ class Scanner:
                 LOGGER.error(f"Unhandled node type {e_type}")
 
 
-def load_ast(beam_file: str, parse_script_path: str) -> Dict:
-    cmd_args = [parse_script_path, beam_file]
-    LOGGER.info(f"Invoking: {cmd_args}")
-    p = subprocess.run(cmd_args, check=True, capture_output=True)
-    result = str(p.stdout, 'utf-8')
-
-    if p.returncode == 0:
-        # LOGGER.info(result)
-        return json.loads(result)
-    else:
-        msg = f"Disasm tool for {beam_file} failed with code={p.returncode}:\n{result}"
-        LOGGER.error(msg)
-        raise Exception(msg)
+def load_ast(beam_file: str) -> List[Form]:
+    beam = BEAMFile(beam_file)
+    return []
